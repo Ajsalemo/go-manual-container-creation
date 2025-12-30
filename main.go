@@ -24,8 +24,6 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		run()
-	case "hey":
-		child()
 	default:
 		panic("what??")
 	}
@@ -52,57 +50,54 @@ func generateRandomString(length int) (string, error) {
 	return string(result), nil
 }
 
-func run() {
-	fmt.Printf("Running %v as PID %d\n", os.Args[2:], os.Getpid())
-	// /proc/self/exe - https://www.man7.org/linux/man-pages/man5/proc.5.html
-	// /proc/self/exe is a symlink that points to the exe of the current process
-	fmt.Println(os.Args[2:])
-	// ---------------------------- //
-	// append() does the following
-	// "hey" is the switch case from main()
-	// os.Args[2:] is the command we want to run inside the new namespace
-	// ---------------------------- //
-	cmd := exec.Command("/proc/self/exe", append([]string{"hey"}, os.Args[2:]...)...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
-	}
-
-	if err := cmd.Run(); err != nil {
-		fmt.Println("Error running /proc/self/exe command:", err)
-		os.Exit(1)
-	}
-}
-
+// Generates a random 8 character limited hostname for the container
 func generateHostname() string {
 	host, err := generateRandomString(8)
 	if err != nil {
 		fmt.Println("Error generating random hostname:", err)
 		os.Exit(1)
 	}
+
+	fmt.Println("Hostname for container is " + host)
 	return host
 }
 
 var hostname = generateHostname()
 
-func child() {
+func run() {
 	fmt.Printf("Running %v as PID %d\n", os.Args[2:], os.Getpid())
+	// ---------------------------- //
+	// os.Args[2] is the first command after the "run" argument
+	// os.Args[3:] are the rest of the arguments
+	// ---------------------------- //
+	cmd := exec.Command(os.Args[2], os.Args[3:]...)
+	fmt.Println("Executing " + os.Args[2] + " " + strings.Join(os.Args[3:], " "))
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID,
+	}
+	// Change root to the new root filesystem created earlier
+	if err := syscall.Chroot(fmt.Sprintf("/tmp/%s/rootfs", hostname)); err != nil {
+		fmt.Println("Error changing root:", err)
+		os.Exit(1)
+	}
+	// Change working directory after changing the root.
+	if err := os.Chdir("/"); err != nil {
+		fmt.Println("Error changing working directory:", err)
+		os.Exit(1)
+	}
 	// Set hostname of the new UTS namespace
-	// https://www.man7.org/linux/man-pages/man7/uts_namespaces.7.html - UTS namespace contains hostname and domain name
+	// https://www.man7.org/linux/man-pages/man7/uts_namespaces.7.html
+	// eg. HOSTNAME for the container
 	if err := syscall.Sethostname([]byte(hostname)); err != nil {
 		fmt.Println("Error setting hostname:", err)
 		os.Exit(1)
 	}
 
-	cmd := exec.Command(os.Args[2], os.Args[3:]...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
 	if err := cmd.Run(); err != nil {
-		fmt.Println("Error running the child command:", err)
+		fmt.Println("Error running "+os.Args[2]+" "+strings.Join(os.Args[3:], " "), err)
 		os.Exit(1)
 	}
 }
@@ -166,6 +161,26 @@ func untar(src, dest string) error {
 				return fmt.Errorf("failed to write file: %w", err)
 			}
 			outFile.Close()
+		case tar.TypeSymlink:
+			// Handle symbolic links
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create parent directory for symlink: %w", err)
+			}
+			// Remove any existing file/symlink at target path
+			os.Remove(targetPath)
+			if err := os.Symlink(header.Linkname, targetPath); err != nil {
+				return fmt.Errorf("failed to create symlink: %w", err)
+			}
+		case tar.TypeLink:
+			// Handle hard links
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create parent directory for hardlink: %w", err)
+			}
+			linkTarget := filepath.Join(dest, header.Linkname)
+			os.Remove(targetPath)
+			if err := os.Link(linkTarget, targetPath); err != nil {
+				return fmt.Errorf("failed to create hardlink: %w", err)
+			}
 		default:
 			// This is a no-op for now. May set this to a debug line in the future. Otherwise this may create a lot of noise
 			// Skip unsupported types (eg. executables)
@@ -173,7 +188,7 @@ func untar(src, dest string) error {
 		}
 	}
 
-	fmt.Printf("Extraction completed successfully")
+	fmt.Printf("Extraction completed successfully \n")
 	fmt.Printf("Deleting initial tar.gz file")
 	// Make sure the initial file exists/is still accessible before deleting it
 	if _, err := os.Stat(src); os.IsNotExist(err) {
