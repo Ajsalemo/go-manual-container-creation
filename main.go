@@ -95,6 +95,13 @@ func run() {
 		fmt.Println("Error setting hostname:", err)
 		os.Exit(1)
 	}
+	// Mount /proc into the container namespace
+	// This is empty by default when using Alpine minirootfs
+	// syscall.Mount args are: source (proc on host), target (proc in container), fstype (type of fs, which is type "proc")
+	if err := syscall.Mount("proc", "proc", "proc", 0, ""); err != nil {
+		fmt.Println("Error mounting proc:", err)
+		os.Exit(1)
+	}
 
 	if err := cmd.Run(); err != nil {
 		fmt.Println("Error running "+os.Args[2]+" "+strings.Join(os.Args[3:], " "), err)
