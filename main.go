@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/aes"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -10,7 +11,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -25,7 +28,8 @@ func main() {
 	case "run":
 		run()
 	default:
-		panic("what??")
+		fmt.Println("Unknown command", os.Args[1])
+		os.Exit(1)
 	}
 }
 
@@ -102,7 +106,35 @@ func run() {
 		fmt.Println("Error mounting proc:", err)
 		os.Exit(1)
 	}
-
+	// All of the below creates a nonroot user
+	// This is then who the command will run as inside the container
+	// 'guest' is an already existing user. check /etc/passwd
+	userName := "guest"
+	u, err := user.Lookup(userName)
+	if err != nil {
+		fmt.Println("Error looking up user:", err)
+		os.Exit(1)
+	}
+	// Parse the found UID and GID.
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		fmt.Println("Error parsing UID:", err)
+		os.Exit(1)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		fmt.Println("Error parsing GID:", err)
+		os.Exit(1)
+	}
+	// Set the UID and GID for the command.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			Uid:         uint32(uid),
+			Gid:         uint32(gid),
+			NoSetGroups: true,
+		},
+	}
+	// ---------------------------- //
 	if err := cmd.Run(); err != nil {
 		fmt.Println("Error running "+os.Args[2]+" "+strings.Join(os.Args[3:], " "), err)
 		os.Exit(1)
