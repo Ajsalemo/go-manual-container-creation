@@ -3,7 +3,6 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
-	"crypto/aes"
 	"crypto/rand"
 	"fmt"
 	"io"
